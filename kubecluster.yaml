@@ -1,4 +1,4 @@
-heat_template_version: 2013-05-23
+heat_template_version: 2014-10-16
 
 description: >
   This template will boot a Kubernetes cluster with one or more
@@ -40,7 +40,12 @@ parameters:
     type: string
     description: how many kubernetes minions to spawn
     default: 1
-  
+
+  max_number_of_minions:
+    type: string
+    description: the maximum number of kubernetes minions to spawn
+    default: 2
+
   fixed_network_cidr:
     type: string
     description: network range for fixed ip network
@@ -181,7 +186,7 @@ resources:
         str_replace:
           template: {get_file: fragments/write-heat-params-master.yaml}
           params:
-            "$MINION_ADDRESSES": {"Fn::Join": [",", {get_attr: [kube_minions, kube_node_ip]}]}
+            "$MINION_ADDRESSES": {list_join: [",", {get_attr: [kube_minions, outputs_list, kube_node_ip]}]}
             "$KUBE_ALLOW_PRIV": {get_param: kube_allow_priv}
             "$WAIT_HANDLE": {get_resource: master_wait_handle}
             "$FLANNEL_NETWORK_CIDR": {get_param: flannel_network_cidr}
@@ -288,12 +293,13 @@ resources:
         get_resource: kube_master_eth0
 
   kube_minions:
-    type: "OS::Heat::ResourceGroup"
+    type: "OS::Heat::AutoScalingGroup"
     depends_on:
       - extrouter_inside
     properties:
-      count: {get_param: number_of_minions}
-      resource_def:
+      min_size: {get_param: number_of_minions}
+      max_size: {get_param: max_number_of_minions}
+      resource:
         type: kubenode.yaml
         properties:
           ssh_key_name: {get_param: ssh_key_name}
@@ -305,14 +311,33 @@ resources:
           external_network_id: {get_param: external_network_id}
           kube_allow_priv: {get_param: kube_allow_priv}
 
+  scale_up_policy:
+    type: OS::Heat::ScalingPolicy
+    properties:
+      adjustment_type: change_in_capacity
+      auto_scaling_group_id: {get_resource: kube_minions}
+      scaling_adjustment: 1
+
+  scale_down_policy:
+    type: OS::Heat::ScalingPolicy
+    properties:
+      adjustment_type: change_in_capacity
+      auto_scaling_group_id: {get_resource: kube_minions}
+      scaling_adjustment: -1
+
 outputs:
 
   kube_master:
     value: {get_attr: [kube_master_floating, floating_ip_address]}
 
   kube_minions:
-    value: {get_attr: [kube_minions, kube_node_ip]}
+    value: {get_attr: [kube_minions, outputs_list, kube_node_ip]}
 
   kube_minions_external:
-    value: {get_attr: [kube_minions, kube_node_external_ip]}
+    value: {get_attr: [kube_minions, outputs_list, kube_node_external_ip]}
 
+  scale_up_url:
+    value: {get_attr: [scale_up_policy, alarm_url]}
+
+  scale_down_url:
+    value: {get_attr: [scale_down_policy, alarm_url]}
